@@ -6,5 +6,13 @@ return [
     'username' => env('MQTT_USERNAME'),
     'password' => env('MQTT_PASSWORD'),
     'client_id' => env('MQTT_CLIENT_ID', 'smart-refill-laravel'),
+
     'ca_file' => storage_path('app/certs/emqxsl-ca.crt'),
+
+    'reconnect_delay' => 5,
+
+    'topics' => [
+        'test' => 'smartrefill/rack01/test',
+        'telemetry' => 'smartrefill/rack01/telemetry',
+    ],
 ];
