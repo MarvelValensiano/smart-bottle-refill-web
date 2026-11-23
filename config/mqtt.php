@@ -12,7 +12,7 @@ return [
     'reconnect_delay' => 5,
 
     'topics' => [
-        'test' => 'smartrefill/rack01/test',
-        'telemetry' => 'smartrefill/rack01/telemetry',
+        'test' => 'smartrefill/+/test',
+        'telemetry' => 'smartrefill/+/telemetry',
     ],
 ];

@@ -1,59 +1,53 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Smart Water Bottle Refill Dispenser — IoT System
+**Projek Akhir Internet of Things (IoT) — Semester 5**
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Sistem dispenser pengisian ulang air botol minum otomatis berbasis Internet of Things (IoT) dengan modul **ESP32**, sensor **Load Cell HX711**, modul **Relay & Pompa**, indikator **LED & LCD**, broker **MQTT (EMQX TLS)**, dan backend cerdas **Laravel (PHP)** beserta antarmuka pemantauan **Web Dashboard**.
 
-## About Laravel
+---
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## 📖 Dokumentasi Lengkap
+Dokumentasi teknis lengkap mengenai arsitektur sistem, alur data (flow data), format protokol MQTT, tabel pin hardware, logika bisnis, dan panduan troubleshooting dapat dilihat pada file:
+👉 **[DOKUMENTASI_SISTEM.md](DOKUMENTASI_SISTEM.md)**
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+---
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+## ⚡ Fitur Utama
+- **Otomatisasi Penuh**: Pompa otomatis menyala saat botol ditaruh dan air $\le 30\%$, berhenti otomatis saat air mencapai $80\%$ ($579\text{ g}$).
+- **Server-Side Intelligence**: Logika perhitungan berat, persentase air, dan keputusan kontrol dijalankan terpusat di server backend.
+- **Safety Cutoff**: Pompa otomatis mati seketika jika botol diangkat dari dudukan dispenser.
+- **Auto-Tare**: Mengeset titik nol secara otomatis saat perangkat dinyalakan.
+- **Real-Time Web Dashboard**: Pemantauan volume air, status pompa, status botol, penghitung jumlah pengisian (hari ini & kumulatif), dan tombol pengujian manual.
 
-## Learning Laravel
+---
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+## 🔌 Pinout Hardware ESP32
+| Komponen | Pin ESP32 | Keterangan |
+|---|---|---|
+| **HX711 DT** | `GPIO 32` | Data timbangan |
+| **HX711 SCK** | `GPIO 33` | Clock timbangan |
+| **LCD SDA** | `GPIO 21` | I2C Data |
+| **LCD SCL** | `GPIO 22` | I2C Clock |
+| **LED Merah** | `GPIO 18` | Air rendah / Berkedip saat isi |
+| **LED Hijau** | `GPIO 19` | Botol terdeteksi di tatakan |
+| **Relay Pompa** | `GPIO 25` & `GPIO 27` | Active LOW (Pemicu Pompa) |
+| **Active Buzzer** | `GPIO 26` | Alarm & notifikasi |
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+---
 
-## Laravel Sponsors
+## 🚀 Cara Menjalankan
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+### 1. Backend Web Server & Database
+Pastikan Apache & MySQL berjalan di XAMPP, lalu jalankan server:
+```bash
+php artisan serve
+```
+Buka browser di: `http://localhost:8000` atau `http://localhost:8000/monitor`
 
-### Premium Partners
+### 2. MQTT Listener Daemon
+Buka terminal kedua dan jalankan daemon pendengar telemetri:
+```bash
+php artisan mqtt:listen
+```
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
-
-## Contributing
-
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
-
-## Code of Conduct
-
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+### 3. ESP32 Firmware
+Buka file `firmware/smart_refill_esp32/smart_refill_esp32.ino` di Arduino IDE, pastikan SSID/Password Wi-Fi sesuai, lalu upload ke ESP32. Pastikan tatakan kosong saat pertama kali dinyalakan agar proses Auto-Tare membaca $0.0\text{ g}$.

@@ -105,22 +105,44 @@ class TelemetryService
                     ($data['raw_weight'] - $setting->tare_offset)
                     / $factor;
 
-                // Nilai negatif tetap disimpan untuk diagnosis.
-                $waterWeight =
-                    $totalWeight - $setting->bottle->empty_weight_g;
+                // Gunakan spesifikasi botol dari sesi aktif jika ada
+                $activeSession = \App\Models\UsageSession::where('device_id', $device->id)
+                    ->where('status', 'active')
+                    ->first();
 
-                $capacity = $setting->bottle->water_capacity_g;
+                $emptyWeight = $activeSession && $activeSession->bottle_empty_weight_g > 0
+                    ? (float) $activeSession->bottle_empty_weight_g
+                    : (float) $setting->bottle->empty_weight_g;
+
+                $capacity = $activeSession && $activeSession->water_capacity_g > 0
+                    ? (float) $activeSession->water_capacity_g
+                    : (float) $setting->bottle->water_capacity_g;
 
                 if ($capacity <= 0) {
-                    throw ValidationException::withMessages([
-                        'water_capacity_g' => 'Kapasitas air harus lebih besar dari nol.',
-                    ]);
+                    $capacity = 700.0;
                 }
+
+                // Nilai selisih berat air di dalam botol
+                $waterWeight = $totalWeight - $emptyWeight;
 
                 $waterPercent = max(
                     0,
                     min(100, $waterWeight / $capacity * 100)
                 );
+            }
+
+            $presentThreshold = (float) ($setting->bottle_present_g ?? 14.0);
+            $removedThreshold = (float) ($setting->bottle_removed_g ?? 9.0);
+            $bottlePresent = false;
+            if ($totalWeight !== null) {
+                if ($totalWeight >= $presentThreshold) {
+                    $bottlePresent = true;
+                } elseif ($totalWeight <= $removedThreshold) {
+                    $bottlePresent = false;
+                } else {
+                    $prev = Telemetry::where('device_id', $device->id)->latest('id')->first();
+                    $bottlePresent = $prev ? (bool) $prev->bottle_present : false;
+                }
             }
 
             $receivedAt = now();
@@ -137,10 +159,7 @@ class TelemetryService
                 'total_weight_g' => $totalWeight,
                 'water_weight_g' => $waterWeight,
                 'water_percent' => $waterPercent,
-
-                // Deteksi botol dengan histeresis dibuat
-                // pada layanan kontrol di tahap berikutnya.
-                'bottle_present' => null,
+                'bottle_present' => $bottlePresent,
 
                 'calibration_factor' => $factor,
                 'tare_offset' => $setting->tare_offset,
@@ -151,6 +170,14 @@ class TelemetryService
             $device->update([
                 'last_seen_at' => $receivedAt,
             ]);
+
+            // Evaluasi aturan bisnis & logika kendali refill otomatis di server
+            try {
+                app(RefillControlService::class)->evaluate($telemetry, $device);
+            } catch (\Throwable $e) {
+                // Jangan gagalkan penyimpanan telemetry jika terjadi anomali pada evaluasi
+                \Illuminate\Support\Facades\Log::error('Gagal evaluasi kontrol refill: ' . $e->getMessage());
+            }
 
             return $telemetry;
         });

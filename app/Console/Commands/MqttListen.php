@@ -75,6 +75,23 @@ class MqttListen extends Command
 
                 $mqtt->connect($settings, true);
 
+                // Siarkan sinyal bahwa listener backend PHP telah aktif & siap memproses data
+                foreach (['rack01', 'rack02', 'rack03'] as $devCode) {
+                    try {
+                        $mqtt->publish(
+                            "smartrefill/{$devCode}/listener/status",
+                            json_encode([
+                                'listener' => 'online',
+                                'status' => 'STANDBY',
+                                'time' => now()->toIso8601String(),
+                            ]),
+                            0
+                        );
+                    } catch (Throwable $e) {
+                        // Abaikan kesalahan broadcast awal
+                    }
+                }
+
                 // ===== TOPIK TES LAMA =====
                 $mqtt->subscribe(
                     $testTopic,
@@ -100,13 +117,13 @@ class MqttListen extends Command
                         string $topic,
                         string $message,
                         bool $retained = false
-                    ) use ($service) {
+                    ) use ($service, $mqtt) {
                         if ($retained) {
                             $this->warn('Telemetry retained diabaikan.');
                             return;
                         }
 
-                        $this->simpanTelemetry($message, $service);
+                        $this->simpanTelemetry($message, $service, $mqtt);
                     },
                     0
                 );
@@ -194,28 +211,80 @@ class MqttListen extends Command
 
     private function simpanTelemetry(
         string $message,
-        TelemetryService $service
+        TelemetryService $service,
+        MqttClient $mqtt
     ): void {
         try {
             $data = $this->decodePayload($message);
 
-            // Topik ini khusus rack01.
+            // Mendukung rack01, rack02, dan rack03
             Validator::make($data, [
-                'device_id' => ['required', 'string', 'in:rack01'],
+                'device_id' => ['required', 'string', 'in:rack01,rack02,rack03'],
             ])->validate();
 
             $record = $service->handle($data);
+            $deviceCode = $data['device_id'];
 
             if ($record->wasRecentlyCreated) {
                 $this->info(
-                    "Telemetry tersimpan | ID: {$record->id}" .
+                    "Telemetry [{$deviceCode}] tersimpan | ID: {$record->id}" .
                     " | Sequence: {$record->sequence}"
                 );
             } else {
                 $this->line(
-                    "Duplikat diabaikan | ID lama: {$record->id}" .
+                    "Duplikat [{$deviceCode}] diabaikan | ID lama: {$record->id}" .
                     " | Sequence: {$record->sequence}"
                 );
+            }
+
+            $record->refresh();
+
+            // Kirim perintah aktuator yang dihasilkan oleh keputusan backend ke ESP32
+            $this->dispatchPendingCommands($mqtt, (int) $record->device_id);
+
+            // Kirim status display ke ESP32 untuk indikator LCD & LED
+            $activeRefill = \App\Models\Refill::where('device_id', $record->device_id)
+                ->whereIn('status', ['filling', 'paused'])
+                ->latest('id')
+                ->first();
+
+            $isWaterEmptyAlert = ($activeRefill && $activeRefill->status === 'paused' && $activeRefill->finish_reason === 'SUMBER_AIR_KOSONG');
+
+            // Ambil ambang batas pengisian penuh yang dipilih user di dashboard
+            $setting = \App\Models\DeviceSetting::where('device_id', $record->device_id)->first();
+            $stopPercent = (float) ($setting?->stop_percent ?? 80.0);
+
+            $statusText = 'STANDBY';
+            if ($isWaterEmptyAlert) {
+                $statusText = 'SUMBER KOSONG';
+            } elseif ($activeRefill) {
+                $statusText = $activeRefill->status === 'paused' ? 'REFILL DIJEDA' : 'MENGISI';
+            } elseif (!$record->bottle_present) {
+                $statusText = 'TANPA BOTOL';
+            } elseif ($record->water_percent !== null && $record->water_percent >= $stopPercent) {
+                $statusText = 'Pengisian Sukses';
+            } elseif ($record->water_percent !== null && $record->water_percent <= 30.0) {
+                $statusText = 'AIR RENDAH';
+            } else {
+                $statusText = 'ISI CUKUP';
+            }
+
+            $statePayload = json_encode([
+                'listener' => 'online',
+                'status' => $statusText,
+                'percent' => $record->water_percent !== null ? round($record->water_percent, 1) : 0,
+                'weight' => $record->total_weight_g !== null ? round($record->total_weight_g, 1) : 0,
+                'bottle' => (bool) $record->bottle_present,
+                'pump' => (bool) ($activeRefill && $activeRefill->status === 'filling'),
+                'alarm' => (bool) $isWaterEmptyAlert,
+                'factor' => (float) ($record->calibration_factor ?? 1138.0),
+                'tare' => (int) ($record->tare_offset ?? -33766),
+            ]);
+
+            try {
+                $mqtt->publish("smartrefill/{$deviceCode}/display/state", $statePayload, 0);
+            } catch (\Throwable $e) {
+                // Abaikan kesalahan kirim state display
             }
         } catch (ValidationException $e) {
             $this->warn(
@@ -228,6 +297,43 @@ class MqttListen extends Command
             $this->error(
                 'Gagal memproses telemetry: ' . $e->getMessage()
             );
+        }
+    }
+
+    private function dispatchPendingCommands(MqttClient $mqtt, int $deviceId): void
+    {
+        $device = \App\Models\Device::find($deviceId);
+        $deviceCode = $device ? $device->code : 'rack01';
+
+        $pending = \App\Models\DeviceCommand::where('device_id', $deviceId)
+            ->where('status', 'pending')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        foreach ($pending as $cmd) {
+            $topic = match ($cmd->type) {
+                'set_pump' => "smartrefill/{$deviceCode}/refill/cmd",
+                'set_buzzer' => "smartrefill/{$deviceCode}/buzzer/cmd",
+                default => "smartrefill/{$deviceCode}/cmd",
+            };
+
+            try {
+                $payloadJson = json_encode($cmd->payload, JSON_THROW_ON_ERROR);
+                $mqtt->publish($topic, $payloadJson, 0);
+
+                $cmd->update([
+                    'status' => 'published',
+                    'published_at' => now(),
+                ]);
+
+                $this->info("Perintah dikirim ke ESP32 [{$deviceCode}]: [{$cmd->type}] -> {$topic} | Data: {$payloadJson}");
+            } catch (Throwable $e) {
+                $cmd->update([
+                    'status' => 'failed',
+                    'error_message' => $e->getMessage(),
+                ]);
+                $this->error("Gagal mengirim perintah {$cmd->type}: " . $e->getMessage());
+            }
         }
     }
 }

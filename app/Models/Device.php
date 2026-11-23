@@ -27,4 +27,29 @@ class Device extends Model
     {
         return $this->hasMany(Telemetry::class);
     }
+
+    public function sessions(): HasMany
+    {
+        return $this->hasMany(UsageSession::class);
+    }
+
+    public function activeSession(): HasOne
+    {
+        return $this->hasOne(UsageSession::class)->where('status', 'active');
+    }
+
+    public function refills(): HasMany
+    {
+        return $this->hasMany(Refill::class);
+    }
+
+    public function commands(): HasMany
+    {
+        return $this->hasMany(DeviceCommand::class);
+    }
+
+    public function events(): HasMany
+    {
+        return $this->hasMany(DeviceEvent::class);
+    }
 }
