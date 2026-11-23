@@ -248,9 +248,19 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       baruSelesaiRefill = false;
     } else if (pesan.indexOf("\"pump\":false") >= 0 || pesan.indexOf("\"pump\": false") >= 0) {
       pompaOff();
-      pesanStatus = "Pengisian Sukses";
-      baruSelesaiRefill = true;
-      bunyikanBuzzer(2500, 300);
+      if (pesan.indexOf("\"reason\":\"completed\"") >= 0 || pesan.indexOf("\"reason\": \"completed\"") >= 0) {
+        pesanStatus = "Pengisian Sukses";
+        baruSelesaiRefill = true;
+        bunyikanBuzzer(2500, 300);
+      } else if (pesan.indexOf("\"reason\":\"water_empty\"") >= 0 || pesan.indexOf("\"reason\": \"water_empty\"") >= 0) {
+        pesanStatus = "SUMBER KOSONG";
+        baruSelesaiRefill = false;
+      } else if (pesan.indexOf("\"reason\":\"paused\"") >= 0 || pesan.indexOf("\"reason\": \"paused\"") >= 0) {
+        pesanStatus = "REFILL DIJEDA";
+        baruSelesaiRefill = false;
+      } else {
+        baruSelesaiRefill = false;
+      }
     }
   }
 
@@ -266,6 +276,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       bunyikanBuzzer(1500, durasi);
       pesanStatus = "SUMBER KOSONG";
       statusAlarm = true;
+      baruSelesaiRefill = false;
     } else if (pesan.indexOf("\"buzzer\":false") >= 0 || pesan.indexOf("\"buzzer\": false") >= 0) {
       buzzerOff();
       statusAlarm = false;
@@ -280,6 +291,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       int e = pesan.indexOf('"', s + 1);
       if (s >= 0 && e > s) {
         pesanStatus = pesan.substring(s + 1, e);
+      }
+      if (pesanStatus.indexOf("KOSONG") >= 0 || pesanStatus.indexOf("DIJEDA") >= 0 || 
+          pesanStatus.indexOf("MENGISI") >= 0 || pesanStatus.indexOf("TANPA") >= 0) {
+        baruSelesaiRefill = false;
       }
     }
 
@@ -488,12 +503,24 @@ void perbaruiTampilan() {
     snprintf(baris, sizeof(baris), "Air:%2.0f%% Tot:%3.0fg", persenAir, beratTotalGram);
     tulisBarisLCD(0, baris);
 
-    // Jika baru saja selesai refill dan botol masih tetap di tatakan: tampilkan "Pengisian Sukses"
-    if (baruSelesaiRefill) {
+    // 1. Prioritas Utama: Alarm Sumber Air Kosong / Aliran Macet
+    if (statusAlarm || pesanStatus.indexOf("KOSONG") >= 0) {
+      tulisBarisLCD(1, "SUMBER KOSONG");
+    }
+    // 2. Refill Dijeda (botol diangkat saat pengisian lalu ditaruh kembali)
+    else if (pesanStatus.indexOf("DIJEDA") >= 0) {
+      tulisBarisLCD(1, "REFILL DIJEDA");
+    }
+    // 3. Pompa sedang aktif mengisi air
+    else if (pompaAktif || pesanStatus.indexOf("MENGISI") >= 0) {
+      tulisBarisLCD(1, "MENGISI");
+    }
+    // 4. Jika baru saja selesai refill (target tercapai) dan botol belum diangkat
+    else if (baruSelesaiRefill) {
       tulisBarisLCD(1, "Pengisian Sukses");
-    } else {
-      // Jika botol sudah pernah diangkat lalu ditaruh lagi tanpa diminum atau diisi dari luar:
-      // Tampilkan status dari server (atau jika ada teks sukses lama, ganti jadi "ISI CUKUP")
+    }
+    // 5. Kondisi normal / standby (ISI CUKUP atau AIR RENDAH)
+    else {
       char barisSatu[17];
       if (pesanStatus.indexOf("berhasil") >= 0 || pesanStatus.indexOf("Berhasil") >= 0 || 
           pesanStatus.indexOf("SUKSES") >= 0 || pesanStatus.indexOf("Sukses") >= 0) {

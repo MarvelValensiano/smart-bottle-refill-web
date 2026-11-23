@@ -450,10 +450,14 @@ class DashboardController extends Controller
 
         $stopPercent = (float) ($device?->setting?->stop_percent ?? 80.0);
         $waterStatus = 'BELUM ADA DATA';
-        if ($percent !== null) {
+
+        if ($latest && $latest->bottle_present === false) {
+            $waterStatus = 'BOTOL DIANGKAT';
+        } elseif ($percent !== null) {
             $p = (float) $percent;
             $waterStatus = $p >= $stopPercent ? 'PENUH' : ($p >= 50 ? 'SEDANG' : ($p > 30 ? 'CUKUP' : 'PERLU REFILL'));
         }
+
         if ($activeRefill && in_array($activeRefill->status, ['pending', 'filling', 'paused'], true)) {
             if ($activeRefill->finish_reason === 'SUMBER_AIR_KOSONG') {
                 $waterStatus = 'SUMBER AIR KOSONG';

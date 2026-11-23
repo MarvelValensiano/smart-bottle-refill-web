@@ -70,7 +70,7 @@ class RefillControlService
                     ]);
 
                     $this->createEvent($device, $activeRefill, 'bottle_lifted_paused', 'warning', 'Botol diangkat saat pengisian. Pompa dimatikan dan status refill dijeda.');
-                    $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => false]);
+                    $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => false, 'reason' => 'paused']);
                 } elseif ($activeRefill->status === 'paused') {
                     // Jika botol dibiarkan terangkat lebih dari 2 menit (120 detik), batalkan agar siklus tidak menggantung
                     if ($activeRefill->updated_at && $activeRefill->updated_at->diffInSeconds(now()) >= 120) {
@@ -107,7 +107,7 @@ class RefillControlService
                 ]);
 
                 $this->createEvent($device, $activeRefill, 'refill_completed', 'info', 'Pengisian air selesai dan berhasil mencapai target.');
-                $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => false]);
+                $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => false, 'reason' => 'completed']);
                 return $commandsToSend;
             }
 
@@ -194,7 +194,7 @@ class RefillControlService
                         $this->createEvent($device, $activeRefill, 'water_flow_error', 'warning', 'Berat botol tidak bertambah selama 10 detik saat refill. Pompa dimatikan, buzzer & LED merah alarm aktif 10 detik.');
 
                         // 1. Pompa berhenti
-                        $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => false]);
+                        $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => false, 'reason' => 'water_empty']);
 
                         // 2. Buzzer menyala terus selama 10 detik
                         $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_buzzer', [
