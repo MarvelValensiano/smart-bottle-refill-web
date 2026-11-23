@@ -267,12 +267,22 @@ class MqttListen extends Command
                 $statusText = 'ISI CUKUP';
             }
 
+            $activeSession = \App\Models\UsageSession::where('device_id', $record->device_id)
+                ->where('status', 'active')
+                ->latest('id')
+                ->first();
+
+            $bottleCapacity = (float) ($activeSession?->water_capacity_g ?? $setting?->bottle?->water_capacity_g ?? 700.0);
+            $bottleEmpty = (float) ($activeSession?->bottle_empty_weight_g ?? $setting?->bottle?->empty_weight_g ?? 19.0);
+
             $statePayload = json_encode([
                 'listener' => 'online',
                 'status' => $statusText,
                 'percent' => $record->water_percent !== null ? round($record->water_percent, 1) : 0,
                 'weight' => $record->total_weight_g !== null ? round($record->total_weight_g, 1) : 0,
                 'bottle' => (bool) $record->bottle_present,
+                'capacity' => $bottleCapacity,
+                'empty' => $bottleEmpty,
                 'pump' => (bool) ($activeRefill && $activeRefill->status === 'filling'),
                 'alarm' => (bool) $isWaterEmptyAlert,
                 'factor' => (float) ($record->calibration_factor ?? 1138.0),

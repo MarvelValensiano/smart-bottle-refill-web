@@ -41,8 +41,8 @@ const uint8_t RELAY_OFF   = HIGH;
 
 // Parameter Karakteristik Botol Aquviva & Timbangan (Disamakan persis dengan Web)
 float faktorKalibrasi          = 1138.0; // Faktor kalibrasi disamakan persis dengan Web Settings (1138)
-const float BERAT_BOTOL_KOSONG = 19.0;
-const float KAPASITAS_AIR      = 700.0;
+float beratBotolKosong         = 19.0;
+float kapasitasAir             = 700.0;
 const float BATAS_BOTOL_ADA    = 14.0;
 const float BATAS_BOTOL_LEPAS  = 9.0;
 
@@ -314,6 +314,18 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       beratTotalGram = pesan.substring(idxW + 9).toFloat();
     }
 
+    int idxCap = pesan.indexOf("\"capacity\":");
+    if (idxCap >= 0) {
+      float c = pesan.substring(idxCap + 11).toFloat();
+      if (c > 10.0) kapasitasAir = c;
+    }
+
+    int idxEmp = pesan.indexOf("\"empty\":");
+    if (idxEmp >= 0) {
+      float e = pesan.substring(idxEmp + 8).toFloat();
+      if (e > 0.0) beratBotolKosong = e;
+    }
+
     int idxF = pesan.indexOf("\"factor\":");
     if (idxF >= 0) {
       float f = pesan.substring(idxF + 9).toFloat();
@@ -364,14 +376,18 @@ void bacaTimbangan() {
     baruSelesaiRefill = false; // Reset tanda selesai refill begitu botol diangkat dari tatakan
   }
 
-  // Kalkulasi Persentase Sisa Air
-  if (botolAda) {
-    float airG = beratTotalGram - BERAT_BOTOL_KOSONG;
-    float pct = (airG / KAPASITAS_AIR) * 100.0;
-    if (pct < 0.0) pct = 0.0;
-    if (pct > 100.0) pct = 100.0;
-    persenAir = pct;
-  } else {
+  // Kalkulasi Persentase Sisa Air (Hanya dihitung lokal jika server listener offline / belum terhubung)
+  if (!serverListenerAktif) {
+    if (botolAda) {
+      float airG = beratTotalGram - beratBotolKosong;
+      float pct = (airG / kapasitasAir) * 100.0;
+      if (pct < 0.0) pct = 0.0;
+      if (pct > 100.0) pct = 100.0;
+      persenAir = pct;
+    } else {
+      persenAir = 0.0;
+    }
+  } else if (!botolAda) {
     persenAir = 0.0;
   }
 }
