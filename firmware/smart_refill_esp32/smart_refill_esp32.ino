@@ -97,6 +97,7 @@ float beratTotalGram = 0.0;
 float persenAir = 0.0;
 bool botolAda = false;
 String pesanStatus = "STANDBY";
+bool baruSelesaiRefill = false;
 
 // Kontrol Pompa & Buzzer
 bool pompaAktif = false;
@@ -244,9 +245,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (pesan.indexOf("\"pump\":true") >= 0 || pesan.indexOf("\"pump\": true") >= 0) {
       pompaOn(30000);
       pesanStatus = "MENGISI";
+      baruSelesaiRefill = false;
     } else if (pesan.indexOf("\"pump\":false") >= 0 || pesan.indexOf("\"pump\": false") >= 0) {
       pompaOff();
       pesanStatus = "Pengisian Sukses";
+      baruSelesaiRefill = true;
       bunyikanBuzzer(2500, 300);
     }
   }
@@ -343,6 +346,7 @@ void bacaTimbangan() {
     botolAda = true;
   } else if (botolAda && beratTotalGram <= BATAS_BOTOL_LEPAS) {
     botolAda = false;
+    baruSelesaiRefill = false; // Reset tanda selesai refill begitu botol diangkat dari tatakan
   }
 
   // Kalkulasi Persentase Sisa Air
@@ -484,15 +488,21 @@ void perbaruiTampilan() {
     snprintf(baris, sizeof(baris), "Air:%2.0f%% Tot:%3.0fg", persenAir, beratTotalGram);
     tulisBarisLCD(0, baris);
 
-    // Penyesuaian agar teks pas dengan 16 kolom LCD 16x2 tanpa terpotong
-    char barisSatu[17];
-    if (pesanStatus.indexOf("berhasil") >= 0 || pesanStatus.indexOf("Berhasil") >= 0 || 
-        pesanStatus.indexOf("SUKSES") >= 0 || pesanStatus.indexOf("Sukses") >= 0) {
-      snprintf(barisSatu, sizeof(barisSatu), "Pengisian Sukses");
+    // Jika baru saja selesai refill dan botol masih tetap di tatakan: tampilkan "Pengisian Sukses"
+    if (baruSelesaiRefill) {
+      tulisBarisLCD(1, "Pengisian Sukses");
     } else {
-      snprintf(barisSatu, sizeof(barisSatu), "%s", pesanStatus.c_str());
+      // Jika botol sudah pernah diangkat lalu ditaruh lagi tanpa diminum atau diisi dari luar:
+      // Tampilkan status dari server (atau jika ada teks sukses lama, ganti jadi "ISI CUKUP")
+      char barisSatu[17];
+      if (pesanStatus.indexOf("berhasil") >= 0 || pesanStatus.indexOf("Berhasil") >= 0 || 
+          pesanStatus.indexOf("SUKSES") >= 0 || pesanStatus.indexOf("Sukses") >= 0) {
+        snprintf(barisSatu, sizeof(barisSatu), "ISI CUKUP");
+      } else {
+        snprintf(barisSatu, sizeof(barisSatu), "%s", pesanStatus.c_str());
+      }
+      tulisBarisLCD(1, barisSatu);
     }
-    tulisBarisLCD(1, barisSatu);
   }
 }
 

@@ -261,8 +261,6 @@ class MqttListen extends Command
                 $statusText = $activeRefill->status === 'paused' ? 'REFILL DIJEDA' : 'MENGISI';
             } elseif (!$record->bottle_present) {
                 $statusText = 'TANPA BOTOL';
-            } elseif ($record->water_percent !== null && $record->water_percent >= $stopPercent) {
-                $statusText = 'Pengisian Sukses';
             } elseif ($record->water_percent !== null && $record->water_percent <= 30.0) {
                 $statusText = 'AIR RENDAH';
             } else {
