@@ -1,34 +1,33 @@
-# 📖 Panduan Setup & Pengujian Sistem Smart Bottle Refill Dispenser
-
-Panduan ini ditujukan bagi rekan tim / penguji yang ingin menjalankan dan menguji proyek ini di laptop masing-masing dari awal (*fresh install*).
+# 📘 Panduan Setup & Pengujian Sistem Smart Bottle Refill IoT
+Panduan ini ditujukan untuk rekan tim / penguji yang ingin menjalankan dan menguji sistem IoT Smart Bottle Refill di laptop baru dari awal.
 
 ---
 
-## 1. Prasyarat Sistem (*Prerequisites*)
-
-Sebelum memulai, pastikan perangkat lunak berikut telah terpasang di laptop:
-- **Git** (versi terbaru)
-- **Web Server & Database:** XAMPP atau Laragon (Apache & MySQL dalam status aktif/Running)
-- **PHP:** Minimal versi **8.2** (pastikan ekstensi `curl`, `pdo_mysql`, `mbstring`, `openssl` aktif)
-- **Composer:** Dependency manager PHP
-- **Node.js & npm:** Minimal Node.js v18 LTS
-- **Arduino IDE** *(hanya jika Anda ingin meng-upload sketch ke board ESP32)*
+## 1. Prasyarat Sistem
+Pastikan perangkat lunak berikut telah terpasang di laptop:
+- **Git**
+- **XAMPP / Laragon** (Apache & MySQL)
+- **PHP** (minimal versi 8.2) & **Composer**
+- **Node.js** (minimal LTS v18+) & **npm**
+- *(Opsional jika upload firmware)* **Arduino IDE 2.x** dengan ESP32 Board Package & library:
+  - `HX711` by bogde
+  - `LiquidCrystal_I2C` by Frank de Brabander / marcus sathler
+  - `PubSubClient` by Nick O'Leary
 
 ---
 
 ## 2. Clone Repository & Instalasi Dependensi
-
-Buka Terminal / Git Bash di direktori kerja Anda:
+Buka Terminal / Command Prompt / Git Bash di folder kerja Anda:
 
 ```bash
 # 1. Clone repository
 git clone https://github.com/khol217/projek_akhir_iot2.git
 cd projek_akhir_iot2
 
-# 2. Install dependensi Backend PHP
+# 2. Install dependensi PHP (Laravel)
 composer install
 
-# 3. Install dan build aset Frontend
+# 3. Install dependensi antarmuka frontend (Tailwind/Vite)
 npm install
 npm run build
 ```
@@ -36,44 +35,40 @@ npm run build
 ---
 
 ## 3. Konfigurasi Environment (`.env`)
-
-1. Salin template `.env.example` menjadi file `.env`:
+1. Salin file template `.env.example` menjadi `.env`:
    ```bash
    cp .env.example .env
    php artisan key:generate
    ```
 
-2. Buka file `.env` menggunakan teks editor (VS Code, Notepad, dll), lalu pastikan pengaturan berikut sesuai:
+2. Buka file `.env` dan pastikan konfigurasi berikut terisi:
 
-### A. Database MySQL
-Buat terlebih dahulu database kosong bernama **`smart_bottle_refill`** di phpMyAdmin (`http://localhost/phpmyadmin`), lalu sesuaikan bagian database di `.env`:
-```env
-DB_CONNECTION=mysql
-DB_HOST=127.0.0.1
-DB_PORT=3306
-DB_DATABASE=smart_bottle_refill
-DB_USERNAME=root
-DB_PASSWORD=
-```
-*(Sesuaikan `DB_USERNAME` dan `DB_PASSWORD` jika MySQL Anda memiliki kata sandi).*
+   ### A. Database MySQL
+   *(Buat database baru bernama `smart_bottle_refill` di phpMyAdmin)*
+   ```env
+   DB_CONNECTION=mysql
+   DB_HOST=127.0.0.1
+   DB_PORT=3306
+   DB_DATABASE=smart_bottle_refill
+   DB_USERNAME=root
+   DB_PASSWORD=
+   ```
 
-### B. Konfigurasi Broker MQTT EMQX
-Tambahkan atau pastikan baris berikut ada di bagian paling bawah file `.env`:
-```env
-MQTT_HOST=i61e46ae.ala.asia-southeast1.emqxsl.com
-MQTT_PORT=8883
-MQTT_USERNAME=esp32-rack01
-MQTT_PASSWORD=ESP32
-MQTT_CLIENT_ID=smart-refill-laravel-test
-```
-
-> **Catatan Sertifikat TLS:** File sertifikat Root CA EMQX sudah tersedia di dalam proyek pada path `storage/app/certs/emqxsl-ca.crt` sehingga koneksi TLS port 8883 akan langsung terverifikasi secara otomatis.
+   ### B. Broker MQTT EMQX (Cloud SSL/TLS)
+   Tambahkan baris berikut di bagian paling bawah file `.env`:
+   ```env
+   MQTT_HOST=i61e46ae.ala.asia-southeast1.emqxsl.com
+   MQTT_PORT=8883
+   MQTT_USERNAME=esp32-rack01
+   MQTT_PASSWORD=ESP32
+   MQTT_CLIENT_ID=smart-refill-laravel-test
+   ```
+   > **Catatan:** File sertifikat CA SSL sudah otomatis tersedia di dalam repository pada direktori `storage/app/certs/emqxsl-ca.crt`.
 
 ---
 
-## 4. Migrasi Database & Data Awal (*Seeding*)
-
-Jalankan perintah berikut di terminal untuk membuat tabel dan mengisi data awal (perangkat `rack01`, profil atlet, botol, dan kalibrasi timbangan):
+## 4. Migrasi Database & Data Awal (Seeding)
+Jalankan perintah ini di terminal untuk membuat tabel dan mengisi data awal (perangkat `rack01`, profil atlet, data botol, batas kalibrasi timbangan, dan profil dispenser):
 
 ```bash
 php artisan migrate --seed --seeder=SmartRefillSeeder
@@ -81,52 +76,39 @@ php artisan migrate --seed --seeder=SmartRefillSeeder
 
 ---
 
-## 5. Konfigurasi Firmware ESP32 *(Jika Melakukan Upload ke Alat)*
-
-Jika ESP32 terhubung ke laptop Anda dan perlu di-flash ulang:
-1. Buka Arduino IDE.
-2. Buka file sketsa: `firmware/smart_refill_esp32/smart_refill_esp32.ino`.
-3. Pastikan library Arduino berikut sudah terpasang via *Library Manager*:
-   - `PubSubClient` (oleh Nick O'Leary)
-   - `HX711` (oleh bogde)
-   - `LiquidCrystal_I2C` (oleh Frank de Brabander / marcus sathler)
-4. Sesuaikan baris **16–17** dengan kredensial Wi-Fi / Hotspot yang Anda gunakan:
+## 5. Konfigurasi Wi-Fi ESP32 *(Jika mengunggah sketch ulang)*
+Jika ESP32 dihubungkan ke laptop penguji dan perlu upload sketch:
+1. Buka file sketch: `firmware/smart_refill_esp32/smart_refill_esp32.ino` di Arduino IDE.
+2. Ubah baris **16–17** sesuai Wi-Fi / Hotspot yang digunakan:
    ```cpp
-   const char* WIFI_SSID     = "NAMA_WIFI_ANDA";    // Wajib frekuensi 2.4 GHz
-   const char* WIFI_PASSWORD = "PASSWORD_WIFI_ANDA";
+   const char* WIFI_SSID     = "NAMA_WIFI_ANDA";    // Wajib 2.4 GHz
+   const char* WIFI_PASSWORD = "PASSWORD_WIFI";
    ```
-5. Pilih board **ESP32 Dev Module** dan Port COM yang sesuai, lalu lakukan **Upload**.
+3. Pilih board **ESP32 Dev Module** dan port COM yang sesuai, lalu lakukan **Upload**.
 
 ---
 
-## 6. Menjalankan Sistem Saat Pengujian (*Running*)
+## 6. Menjalankan Sistem Saat Pengujian
+Buka **2 jendela terminal terpisah** di folder proyek:
 
-Untuk menjalankan pengujian secara penuh dan *real-time*, buka **2 jendela terminal**:
-
-### 🌐 Terminal 1: Web Server Dashboard
+### 🔹 Terminal 1 — Web Server (Dashboard)
 ```bash
 php artisan serve
 ```
-- Buka browser dan akses: **`http://localhost:8000`**
-- Halaman dashboard pemantauan, riwayat isi ulang, dan kontrol perangkat akan tampil.
+Buka browser dan akses: **`http://localhost:8000`**
 
-### 🧠 Terminal 2: Background Listener MQTT (Otak Sistem)
+### 🔹 Terminal 2 — MQTT Listener (Otak Otomatisasi & Kontrol Pompa)
 ```bash
 php artisan mqtt:listen
 ```
-- **Wajib Dijalankan!** Perintah ini bertindak sebagai jembatan komunikasi backend dengan ESP32.
-- Terminal ini menerima data pembacaan berat timbangan, menghitung persentase air secara dinamis, mengontrol pompa otomatis, mendeteksi sumber air macet, serta memperbarui tampilan LCD di dispenser.
+> ⚠️ **PENTING:** Terminal 2 ini **WAJIB TETAP BERJALAN** selama pengujian. Perintah ini bertindak sebagai otak backend yang menerima data timbangan secara real-time, mendeteksi botol, menghitung persentase air resmi, mengontrol pompa ON/OFF, mendeteksi air macet, serta memperbarui tampilan layar LCD dispenser.
 
 ---
 
-## 7. Verifikasi Pengujian
-
-| Pengujian | Aksi Fisik | Hasil yang Diharapkan |
-| :--- | :--- | :--- |
-| **Koneksi** | Colok ESP32 ke power / USB | Terminal 2 menampilkan log telemetry masuk, status dashboard menjadi `ONLINE`. |
-| **Deteksi Botol** | Letakkan botol di atas timbangan | LCD menampilkan berat & persentase air. Status web menjadi `TERDETEKSI`. |
-| **Refill Otomatis** | Botol diletakkan dengan isi $\le 30\%$ | Pompa menyala, LCD menampilkan `MENGISI`, LED merah berkedip. |
-| **Jeda Refill** | Angkat botol saat pompa sedang mengisi | Pompa otomatis mati, LCD menampilkan `REFILL DIJEDA`. Saat ditaruh lagi, pompa lanjut mengisi. |
-| **Target Tercapai** | Pengisian mencapai target (misal $80\%$) | Pompa mati, LCD menampilkan `Pengisian Sukses`, buzzer berbunyi bip selesai. |
-| **Botol Diambil** | Angkat botol setelah selesai refill | Teks sukses beralih ke standby `ISI CUKUP`, status dashboard menjadi `BOTOL DIANGKAT`. |
-| **Sumber Kosong** | Pompa aktif namun berat air tidak bertambah $\ge 5$ detik | Pompa dimatikan paksa, buzzer menyala 10 detik, LCD menampilkan `SUMBER KOSONG`. |
+## 7. Checklist Alur Pengujian Dispenser
+1. **Standby:** Pasang botol kosong ke rak/timbangan $\rightarrow$ Status di Web: `AIR RENDAH`, Pompa otomatis mulai mengisi air. Layar LCD: `MENGISI`.
+2. **Jeda Pengisian:** Angkat botol saat pompa sedang mengisi $\rightarrow$ Pompa otomatis mati seketika. Layar LCD: `REFILL DIJEDA`. Dashboard Web: `BOTOL DIANGKAT`.
+3. **Lanjut Pengisian:** Letakkan kembali botol ke tatakan $\rightarrow$ Pompa otomatis menyala kembali melanjutkan pengisian.
+4. **Target Tercapai:** Ketika persentase air mencapai target $\rightarrow$ Pompa mati. Layar LCD menampilkan: `Pengisian Sukses`.
+5. **Ambil Botol Setelah Refill:** Angkat botol yang sudah penuh $\rightarrow$ LCD beralih menampilkan: `ISI CUKUP` ketika botol diletakkan kembali.
+6. **Air Habis / Macet:** Jika pompa menyala tetapi air tidak bertambah $\rightarrow$ Pompa mati demi keamanan, buzzer berbunyi peringatan, LED merah berkedip, dan LCD menampilkan: `SUMBER KOSONG`.
