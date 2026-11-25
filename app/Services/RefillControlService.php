@@ -88,9 +88,46 @@ class RefillControlService
             }
 
             // A2. KONDISI BOTOL ADA DI TATAKAN
-            // Cek apakah target berhenti sudah tercapai (persentase atau berat target)
-            $isTargetReached = ($waterPercent !== null && $waterPercent >= $stopPercent) ||
-                               ($totalWeight !== null && $targetWeight > 0 && $totalWeight >= $targetWeight);
+            // Ambil telemetry sebelumnya untuk verifikasi kestabilan & proteksi anti-lonjakan (anti-spike)
+            $prevTelemetry = Telemetry::where('device_id', $device->id)
+                ->where('id', '<', $telemetry->id)
+                ->latest('id')
+                ->first();
+
+            $isSpike = false;
+            if ($totalWeight !== null) {
+                // Lonjakan ekstrem melebihi batas fisik tatakan/botol (misal > 1200g atau > target + 120g)
+                if ($totalWeight > 1200.0 || ($targetWeight > 0 && $totalWeight > ($targetWeight + 150.0))) {
+                    $isSpike = true;
+                }
+                // Lonjakan instan lebih dari 35 gram dalam 500 ms (motor pompa rata-rata mengisi 10-25 g/s)
+                if ($prevTelemetry && $prevTelemetry->total_weight_g !== null) {
+                    if (($totalWeight - (float) $prevTelemetry->total_weight_g) > 35.0) {
+                        $isSpike = true;
+                    }
+                }
+            }
+
+            // Target berhenti tercapai jika memenuhi nilai ambang DAN bukan lonjakan palsu (spike)
+            $rawTargetCondition = ($waterPercent !== null && $waterPercent >= $stopPercent) ||
+                                  ($totalWeight !== null && $targetWeight > 0 && $totalWeight >= $targetWeight);
+
+            $isTargetReached = false;
+            if ($rawTargetCondition && !$isSpike) {
+                // Pastikan bukan lompatan mendadak dari persentase rendah (misal dari 30% tiba-tiba loncat)
+                $wasCloseOrConfirmed = false;
+                if ($prevTelemetry) {
+                    $prevPct = (float) ($prevTelemetry->water_percent ?? 0);
+                    $prevW = (float) ($prevTelemetry->total_weight_g ?? 0);
+                    // Pembacaan sebelumnya sudah dekat target (selisih <= 6% atau <= 35g)
+                    if ($prevPct >= ($stopPercent - 6.0) || ($targetWeight > 0 && $prevW >= ($targetWeight - 35.0))) {
+                        $wasCloseOrConfirmed = true;
+                    }
+                }
+                if ($wasCloseOrConfirmed || !$prevTelemetry) {
+                    $isTargetReached = true;
+                }
+            }
 
             if ($isTargetReached) {
                 $endWeight = (float) $totalWeight;
@@ -161,29 +198,47 @@ class RefillControlService
             $fillStart = $activeRefill->started_at ?? $activeRefill->created_at;
             $fillDuration = $fillStart ? abs($refTime->diffInSeconds($fillStart)) : 0;
 
-            if ($fillDuration >= 10) {
-                // Cari telemetry dari rentang 8-15 detik yang lalu selama pengisian aktif ini
-                $sampleTenSecsAgo = Telemetry::where('device_id', $device->id)
-                    ->where('id', '<=', $telemetry->id)
-                    ->where('received_at', '<=', $refTime->copy()->subSeconds(8))
-                    ->where('received_at', '>=', $refTime->copy()->subSeconds(16))
-                    ->latest('id')
-                    ->first();
-
-                if (!$sampleTenSecsAgo) {
-                    $sampleTenSecsAgo = Telemetry::where('device_id', $device->id)
-                        ->where('id', '<=', $telemetry->id)
-                        ->where('received_at', '>=', $refTime->copy()->subSeconds(12))
-                        ->orderBy('id', 'asc')
-                        ->first();
+            // Evaluasi dilakukan setelah pompa berjalan sekurangnya 10 detik
+            // Dan hanya jika pembacaan saat ini bukan lonjakan / drop sesaat (glitch)
+            $isGlitchDrop = false;
+            if ($prevTelemetry && $prevTelemetry->total_weight_g !== null && $totalWeight !== null) {
+                if (((float) $prevTelemetry->total_weight_g - (float) $totalWeight) > 25.0) {
+                    $isGlitchDrop = true; // Penurunan mendadak > 25g dalam 500ms adalah noise getaran pompa, bukan air habis
                 }
+            }
 
-                if ($sampleTenSecsAgo && $sampleTenSecsAgo->total_weight_g !== null && $telemetry->total_weight_g !== null) {
-                    $gain = (float) $telemetry->total_weight_g - (float) $sampleTenSecsAgo->total_weight_g;
+            if ($fillDuration >= 10 && !$isGlitchDrop && !$isSpike) {
+                // Ambil 3 sampel telemetry terkini untuk meratakan noise getaran pompa
+                $recentWeights = Telemetry::where('device_id', $device->id)
+                    ->where('id', '<=', $telemetry->id)
+                    ->where('id', '>=', $telemetry->id - 5)
+                    ->latest('id')
+                    ->take(3)
+                    ->pluck('total_weight_g')
+                    ->filter(fn($w) => $w !== null && $w > 10.0 && $w < 1500.0)
+                    ->values();
+
+                // Ambil 3 sampel telemetry dari jendela 8-14 detik yang lalu
+                $oldWeights = Telemetry::where('device_id', $device->id)
+                    ->where('id', '<=', $telemetry->id)
+                    ->where('received_at', '<=', $refTime->copy()->subSeconds(7))
+                    ->where('received_at', '>=', $refTime->copy()->subSeconds(14))
+                    ->latest('id')
+                    ->take(3)
+                    ->pluck('total_weight_g')
+                    ->filter(fn($w) => $w !== null && $w > 10.0 && $w < 1500.0)
+                    ->values();
+
+                if ($recentWeights->count() >= 2 && $oldWeights->count() >= 1) {
+                    $recentAvg = $recentWeights->avg();
+                    $oldAvg = $oldWeights->avg();
+                    $gain = (float) $recentAvg - (float) $oldAvg;
                     $minGain = (float) ($setting->min_gain_g ?? 2.0);
 
-                    if ($gain < $minGain) {
-                        // Berat botol tidak bertambah selama 10 detik!
+                    // Air macet/habis: kenaikan berat rata-rata kurang dari ambang minimum (misal < 2g dalam 10s)
+                    // Dan kenaikan tidak negatif ekstrem (jika negatif ekstrem biasanya botol diangkat atau noise)
+                    if ($gain < $minGain && $gain > -15.0) {
+                        // Berat botol terbukti stabil tidak bertambah selama 10 detik pengisian!
                         $activeRefill->update([
                             'status' => 'paused',
                             'finish_reason' => 'SUMBER_AIR_KOSONG',
@@ -191,7 +246,7 @@ class RefillControlService
                             'end_total_weight_g' => $totalWeight,
                         ]);
 
-                        $this->createEvent($device, $activeRefill, 'water_flow_error', 'warning', 'Berat botol tidak bertambah selama 10 detik saat refill. Pompa dimatikan, buzzer & LED merah alarm aktif 10 detik.');
+                        $this->createEvent($device, $activeRefill, 'water_flow_error', 'warning', 'Berat botol tidak bertambah selama 10 detik saat refill (sumber air habis/aliran macet). Pompa dimatikan, buzzer & LED merah alarm aktif 10 detik.');
 
                         // 1. Pompa berhenti
                         $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => false, 'reason' => 'water_empty']);
@@ -211,7 +266,7 @@ class RefillControlService
             // A5. JIKA STATUSNYA SEDANG MENGISI ('filling'):
             // Pengamanan: Batas Waktu Maksimum Refill Aktif (T_max = 60 detik)
             $maxDurationSec = 60;
-            if ($activeRefill->started_at && now()->diffInSeconds($activeRefill->started_at) >= $maxDurationSec) {
+            if ($activeRefill->started_at && abs(now()->diffInSeconds($activeRefill->started_at)) >= $maxDurationSec) {
                 $activeRefill->update([
                     'status' => 'failed',
                     'finish_reason' => 'TIMEOUT_T_MAX',

@@ -359,14 +359,45 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 void bacaTimbangan() {
   if (!timbangan.is_ready()) return;
 
-  nilaiMentah = timbangan.read();
+  long rawBaru = timbangan.read();
+
+  // 1. Filter Glitch Ekstrem: Nilai ADC di luar rentang fisik sensor (misal spike interferensi motor)
+  if (rawBaru > 2500000 || rawBaru < -600000) {
+    return; // Abaikan sampel rusak akibat noise kelistrikan
+  }
+
+  // 2. Proteksi Lonjakan Mendadak saat Pompa Aktif (Getaran motor / percikan air)
+  float beratUkur = (float)(rawBaru - titikNolTare) / faktorKalibrasi;
+  if (fabs(beratUkur) < 2.0) beratUkur = 0.0;
+
+  if (pompaAktif && pernahBacaSensor) {
+    // Jika ada lompatan drastis > 40 gram dalam 1 putaran loop saat pompa aktif
+    if (fabs(beratUkur - beratTotalGram) > 40.0) {
+      delayMicroseconds(50);
+      if (timbangan.is_ready()) {
+        long rawKonfirmasi = timbangan.read();
+        float beratKonfirmasi = (float)(rawKonfirmasi - titikNolTare) / faktorKalibrasi;
+        if (fabs(beratKonfirmasi - beratTotalGram) > 40.0) {
+          // Benar-benar ada perubahan fisik nyata (misal botol diangkat/ditaruh)
+          rawBaru = rawKonfirmasi;
+          beratUkur = beratKonfirmasi;
+        } else {
+          // Nilai rawBaru sebelumnya terbukti hanya glitch sesaat, abaikan
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+    // Filter perataan ringan saat pompa menyala agar riak air tidak mengacaukan bacaan
+    beratTotalGram = (0.75f * beratUkur) + (0.25f * beratTotalGram);
+  } else {
+    beratTotalGram = beratUkur;
+  }
+
+  nilaiMentah = rawBaru;
   terakhirBacaSensor = millis();
   pernahBacaSensor = true;
-
-  // Kalkulasi Berat Fisik Langsung (Menggunakan faktor dan tare yang sama dengan Web)
-  float beratUkur = (float)(nilaiMentah - titikNolTare) / faktorKalibrasi;
-  if (fabs(beratUkur) < 2.0) beratUkur = 0.0;
-  beratTotalGram = beratUkur;
 
   // Deteksi Botol Berdasarkan Berat (Histeresis 14g / 9g)
   if (!botolAda && beratTotalGram >= BATAS_BOTOL_ADA) {
