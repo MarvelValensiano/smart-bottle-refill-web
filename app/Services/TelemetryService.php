@@ -95,6 +95,9 @@ class TelemetryService
             $waterWeight = null;
             $waterPercent = null;
 
+            $presentThreshold = (float) ($setting->bottle_present_g ?? 14.0);
+            $removedThreshold = (float) ($setting->bottle_removed_g ?? 9.0);
+
             // Hitung hanya jika sensor siap dan server sudah tare.
             if (
                 $data['sensor_ready'] &&
@@ -122,6 +125,20 @@ class TelemetryService
                     $capacity = 700.0;
                 }
 
+                // Filter Glitch Penurunan Sesaat & Fluktuasi saat Pompa Aktif:
+                $prevTelemetry = Telemetry::where('device_id', $device->id)->latest('id')->first();
+                if ($data['pump_on'] && $prevTelemetry && $prevTelemetry->total_weight_g !== null) {
+                    $diffDrop = (float) $prevTelemetry->total_weight_g - (float) $totalWeight;
+                    // Jika terjadi drop mendadak > 20g akibat getaran motor pompa
+                    if ($diffDrop > 20.0 && $totalWeight > ($removedThreshold + 5.0)) {
+                        $totalWeight = (float) $prevTelemetry->total_weight_g;
+                    }
+                    // Cegah fluktuasi riak air kecil turun 1%-2% saat pompa sedang mengisi (monotonik)
+                    elseif ($diffDrop > 0 && $diffDrop < 15.0 && $totalWeight > ($removedThreshold + 5.0)) {
+                        $totalWeight = (float) $prevTelemetry->total_weight_g;
+                    }
+                }
+
                 // Nilai selisih berat air di dalam botol
                 $waterWeight = $totalWeight - $emptyWeight;
 
@@ -131,8 +148,6 @@ class TelemetryService
                 );
             }
 
-            $presentThreshold = (float) ($setting->bottle_present_g ?? 14.0);
-            $removedThreshold = (float) ($setting->bottle_removed_g ?? 9.0);
             $bottlePresent = false;
             if ($totalWeight !== null) {
                 if ($totalWeight >= $presentThreshold) {
@@ -143,6 +158,10 @@ class TelemetryService
                     $prev = Telemetry::where('device_id', $device->id)->latest('id')->first();
                     $bottlePresent = $prev ? (bool) $prev->bottle_present : false;
                 }
+            } else {
+                // Jangan langsung simpulkan botol diangkat jika 1 telemetry kehilangan sampel ADC sesaat (sensor_ready=false)
+                $prev = Telemetry::where('device_id', $device->id)->latest('id')->first();
+                $bottlePresent = $prev ? (bool) $prev->bottle_present : false;
             }
 
             $receivedAt = now();

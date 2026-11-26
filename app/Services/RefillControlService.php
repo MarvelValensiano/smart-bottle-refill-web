@@ -38,13 +38,14 @@ class RefillControlService
             ->where('status', 'active')
             ->first();
 
-        // Pemulihan otomatis gangguan: Jika sebelumnya botol diangkat dan sekarang sudah diletakkan kembali stabil
-        if ($activeSession && $activeSession->is_locked && $activeSession->lock_reason === 'BOTOL_DIANGKAT' && $bottlePresent) {
+        // Pemulihan otomatis gangguan: Jika sebelumnya botol diangkat atau terkunci gangguan sumber air,
+        // dan sekarang botol diletakkan kembali di tatakan / user memulai siklus baru, buka kuncinya otomatis!
+        if ($activeSession && $activeSession->is_locked && $bottlePresent) {
             $activeSession->update([
                 'is_locked' => false,
                 'lock_reason' => null,
             ]);
-            $this->createEvent($device, null, 'bottle_returned', 'info', 'Botol diletakkan kembali di tatakan timbangan. Sistem siap beroperasi.');
+            $this->createEvent($device, null, 'bottle_returned', 'info', 'Botol diletakkan di tatakan timbangan. Kunci sesi dilepas dan sistem siap beroperasi.');
         }
 
         // 3. Ambil Siklus Refill yang Sedang Berjalan atau Dijeda (jika ada)
@@ -157,6 +158,27 @@ class RefillControlService
                     $pauseStart = $activeRefill->updated_at ?? $activeRefill->created_at;
                     $pauseElapsed = $pauseStart ? abs($refTime->diffInSeconds($pauseStart)) : 0;
 
+                    // Jika sudah mencapai batas percobaan ulang (retry_count >= 2) dan sumber air tetap tidak ada,
+                    // kunci pengisian secara permanen sebagai gangguan sumber air!
+                    if ($activeRefill->retry_count >= 2) {
+                        $activeRefill->update([
+                            'status' => 'failed',
+                            'finish_reason' => 'SUMBER_AIR_KOSONG_LOCKED',
+                            'finished_at' => now(),
+                        ]);
+
+                        if ($activeSession) {
+                            $activeSession->update([
+                                'is_locked' => true,
+                                'lock_reason' => 'SUMBER_TIDAK_TERDETEKSI',
+                            ]);
+                        }
+
+                        $this->createEvent($device, $activeRefill, 'water_empty_locked', 'error', 'Sumber air tidak terdeteksi setelah percobaan ulang. Pengisian terkunci, pompa dimatikan permanen.');
+                        $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => false, 'reason' => 'water_empty']);
+                        return $commandsToSend;
+                    }
+
                     // Beri jeda 10 detik dengan pompa mati dan alarm buzzer/LED aktif
                     if ($pauseElapsed < 10) {
                         return $commandsToSend;
@@ -169,7 +191,7 @@ class RefillControlService
                         'started_at' => now(), // Reset timer agar jendela evaluasi 10 detik dihitung dari saat ini
                     ]);
 
-                    $this->createEvent($device, $activeRefill, 'refill_rechecking_water', 'info', 'Jeda 10 detik peringatan selesai. Menyalakan pompa kembali untuk mengecek ketersediaan air.');
+                    $this->createEvent($device, $activeRefill, 'refill_rechecking_water', 'info', 'Jeda 10 detik peringatan selesai. Menyalakan pompa kembali untuk mengecek ketersediaan air (Percobaan ke-' . $activeRefill->retry_count . ').');
                     $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_buzzer', ['buzzer' => false]);
                     $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => true, 'lease_ms' => 30000]);
                     return $commandsToSend;
@@ -208,15 +230,29 @@ class RefillControlService
             }
 
             if ($fillDuration >= 10 && !$isGlitchDrop && !$isSpike) {
-                // Ambil 3 sampel telemetry terkini untuk meratakan noise getaran pompa
-                $recentWeights = Telemetry::where('device_id', $device->id)
+                // Ambil 5 sampel telemetry terkini untuk analisis stabilitas
+                $recentTelemetry = Telemetry::where('device_id', $device->id)
                     ->where('id', '<=', $telemetry->id)
-                    ->where('id', '>=', $telemetry->id - 5)
+                    ->where('id', '>=', $telemetry->id - 6)
                     ->latest('id')
-                    ->take(3)
+                    ->take(5)
+                    ->get();
+
+                // Bersihkan sampel terkini dari glitch/outlier (jika ada sampel yang drop > 40g dari tetangganya)
+                $recentWeights = $recentTelemetry
                     ->pluck('total_weight_g')
                     ->filter(fn($w) => $w !== null && $w > 10.0 && $w < 1500.0)
                     ->values();
+
+                // Hitung median atau hilangkan nilai minimum ekstrem jika ada variansi besar akibat spike getaran
+                if ($recentWeights->count() >= 3) {
+                    $sorted = $recentWeights->sort()->values();
+                    // Jika ada nilai minimum yang drop drastis (> 35g di bawah median), buang outlier tersebut
+                    $median = $sorted->get((int) floor($sorted->count() / 2));
+                    $filteredRecent = $recentWeights->filter(fn($w) => abs($w - $median) <= 40.0)->values();
+                } else {
+                    $filteredRecent = $recentWeights;
+                }
 
                 // Ambil 3 sampel telemetry dari jendela 8-14 detik yang lalu
                 $oldWeights = Telemetry::where('device_id', $device->id)
@@ -229,16 +265,16 @@ class RefillControlService
                     ->filter(fn($w) => $w !== null && $w > 10.0 && $w < 1500.0)
                     ->values();
 
-                if ($recentWeights->count() >= 2 && $oldWeights->count() >= 1) {
-                    $recentAvg = $recentWeights->avg();
+                if ($filteredRecent->count() >= 2 && $oldWeights->count() >= 1) {
+                    $recentAvg = $filteredRecent->avg();
                     $oldAvg = $oldWeights->avg();
                     $gain = (float) $recentAvg - (float) $oldAvg;
                     $minGain = (float) ($setting->min_gain_g ?? 2.0);
 
                     // Air macet/habis: kenaikan berat rata-rata kurang dari ambang minimum (misal < 2g dalam 10s)
-                    // Dan kenaikan tidak negatif ekstrem (jika negatif ekstrem biasanya botol diangkat atau noise)
-                    if ($gain < $minGain && $gain > -15.0) {
-                        // Berat botol terbukti stabil tidak bertambah selama 10 detik pengisian!
+                    // HANYA dipicu jika gain berada di bawah minimum gain (< minGain) DAN bukan drop getaran ekstrem (< -20g).
+                    if ($gain < $minGain && $gain >= -15.0) {
+                        // Berat botol terbukti tidak bertambah selama 10 detik pengisian (pompa macet / air habis)!
                         $activeRefill->update([
                             'status' => 'paused',
                             'finish_reason' => 'SUMBER_AIR_KOSONG',
@@ -246,7 +282,7 @@ class RefillControlService
                             'end_total_weight_g' => $totalWeight,
                         ]);
 
-                        $this->createEvent($device, $activeRefill, 'water_flow_error', 'warning', 'Berat botol tidak bertambah selama 10 detik saat refill (sumber air habis/aliran macet). Pompa dimatikan, buzzer & LED merah alarm aktif 10 detik.');
+                        $this->createEvent($device, $activeRefill, 'water_flow_error', 'warning', 'Berat botol tidak bertambah selama 10 detik saat refill (sumber air habis/pompa terangkat). Pompa dimatikan, buzzer & LED merah alarm aktif 10 detik.');
 
                         // 1. Pompa berhenti
                         $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => false, 'reason' => 'water_empty']);
@@ -264,8 +300,10 @@ class RefillControlService
             }
 
             // A5. JIKA STATUSNYA SEDANG MENGISI ('filling'):
-            // Pengamanan: Batas Waktu Maksimum Refill Aktif (T_max = 60 detik)
-            $maxDurationSec = 60;
+            // Pengamanan: Batas Waktu Maksimum Refill Aktif (T_max)
+            // Untuk target tinggi (misal 80%-100%), debit pompa kecil membutuhkan waktu lebih lama (~90-100 detik).
+            // Hitung T_max adaptif: minimal 60 detik, atau durasi yang proporsional dengan target (hingga 120 detik).
+            $maxDurationSec = max(90, min(150, (int) round(($stopPercent / 100.0) * 130)));
             if ($activeRefill->started_at && abs(now()->diffInSeconds($activeRefill->started_at)) >= $maxDurationSec) {
                 $activeRefill->update([
                     'status' => 'failed',
@@ -274,7 +312,7 @@ class RefillControlService
                     'end_total_weight_g' => $totalWeight,
                 ]);
 
-                $this->createEvent($device, $activeRefill, 'refill_timeout', 'error', 'Durasi pengisian melampaui batas waktu maksimum T_max.');
+                $this->createEvent($device, $activeRefill, 'refill_timeout', 'error', 'Durasi pengisian melampaui batas waktu maksimum T_max (' . $maxDurationSec . 's).');
                 $commandsToSend[] = $this->createCommand($device, $activeRefill, 'set_pump', ['pump' => false]);
                 return $commandsToSend;
             }
@@ -300,8 +338,9 @@ class RefillControlService
 
         if ($lastCancelledRefill && $bottlePresent) {
             // Periksa apakah botol pernah diangkat setelah pembatalan tersebut
+            $cancelledAt = $lastCancelledRefill->finished_at ?? $lastCancelledRefill->updated_at;
             $liftedAfterCancel = Telemetry::where('device_id', $device->id)
-                ->where('id', '>', $lastCancelledRefill->updated_at ? Telemetry::where('device_id', $device->id)->where('created_at', '<=', $lastCancelledRefill->updated_at)->max('id') ?? 0 : 0)
+                ->where('received_at', '>=', $cancelledAt ? $cancelledAt->subSeconds(1) : now()->subMinutes(5))
                 ->where('bottle_present', false)
                 ->exists();
 
@@ -500,7 +539,11 @@ class RefillControlService
     {
         $weight = $telemetry->total_weight_g;
         if ($weight === null) {
-            return false;
+            $prev = Telemetry::where('device_id', $device->id)
+                ->where('id', '<', $telemetry->id)
+                ->latest('id')
+                ->first();
+            return $prev ? (bool) $prev->bottle_present : false;
         }
 
         $presentThreshold = (float) ($setting->bottle_present_g ?? 14.0);

@@ -90,7 +90,7 @@ long nilaiMentah = 0;
 long titikNolTare = -33766; // Baseline tare tatakan kosong disamakan persis dengan Web (-33766)
 bool pernahBacaSensor = false;
 unsigned long terakhirBacaSensor = 0;
-const unsigned long BATAS_DATA_SENSOR = 1000;
+const unsigned long BATAS_DATA_SENSOR = 2500; // Toleransi waktu sensor sebelum dianggap offline (2.5 detik)
 
 // Status & Pengukuran
 float beratTotalGram = 0.0;
@@ -98,6 +98,10 @@ float persenAir = 0.0;
 bool botolAda = false;
 String pesanStatus = "STANDBY";
 bool baruSelesaiRefill = false;
+
+// Filter Anti Fluktuasi & Validasi Botol Lepas
+uint8_t hitunganBotolLepas = 0;
+float beratTampilanTertinggi = 0.0;
 
 // Kontrol Pompa & Buzzer
 bool pompaAktif = false;
@@ -374,10 +378,20 @@ void bacaTimbangan() {
   float beratUkur = (float)(rawBaru - titikNolTare) / faktorKalibrasi;
   if (fabs(beratUkur) < 2.0) beratUkur = 0.0;
 
-  // 2. DETEKSI BOTOL DIANGKAT (INSTANT HARDWARE CUTOFF):
-  // Jika beban di bawah batas lepas, segera tangani tanpa smoothing/delay!
+  // 2. DETEKSI BOTOL DIANGKAT (INSTANT TAPI KEBAL GLITCH SESAAT):
+  // Jika beban di bawah batas lepas:
   if (beratUkur <= BATAS_BOTOL_LEPAS) {
+    // Jika pompa sedang menyala, pastikan bukan glitch 1 sampel noise motor (butuh 2 sampel berturut-turut < 9g)
+    if (pompaAktif) {
+      hitunganBotolLepas++;
+      if (hitunganBotolLepas < 2) {
+        return; // Tahan 1 siklus untuk verifikasi apakah botol benar-benar diangkat atau hanya spike negatif
+      }
+    }
+
+    hitunganBotolLepas = 0;
     beratTotalGram = beratUkur;
+    beratTampilanTertinggi = 0.0;
     nilaiMentah = rawBaru;
     terakhirBacaSensor = millis();
     pernahBacaSensor = true;
@@ -387,7 +401,7 @@ void bacaTimbangan() {
       baruSelesaiRefill = false;
       persenAir = 0.0;
 
-      // INSTANT CUTOFF: Matikan pompa seketika tanpa menunggu siklus loop berikutnya!
+      // INSTANT CUTOFF: Matikan pompa seketika!
       if (pompaAktif) {
         pompaOff();
         pesanStatus = "BOTOL DIANGKAT";
@@ -397,12 +411,33 @@ void bacaTimbangan() {
     return;
   }
 
+  // Jika beban normal (> BATAS_BOTOL_LEPAS), reset counter lepas
+  hitunganBotolLepas = 0;
+
   // 3. JIKA BOTOL ADA / DI ATAS TATAKAN:
   if (pompaAktif && pernahBacaSensor) {
-    // Filter perataan ringan saat pompa menyala agar riak/getaran air stabil
-    beratTotalGram = (0.75f * beratUkur) + (0.25f * beratTotalGram);
+    // PROTEKSI GLITCH MOTOR: Saat pompa menyala, air sedang masuk (berat seharusnya bertambah).
+    // Jika ada penurunan drastis > 25g atau lonjakan ekstrem > 50g dalam 1 siklus,
+    // itu adalah noise getaran motor relay/pompa, bukan penurunan fisik air botol!
+    float delta = beratUkur - beratTotalGram;
+    if (delta < -25.0 || delta > 50.0) {
+      return; // Abaikan sampel spike/glitch sesaat
+    }
+
+    // Filter perataan (Exponential Moving Average) saat pompa menyala agar riak air stabil
+    beratTotalGram = (0.50f * beratUkur) + (0.50f * beratTotalGram);
+
+    // Kunci Monotonik saat Pompa Aktif:
+    // Selama pengisian berlangsung, air hanya bertambah. Jangan biarkan riak air membuat
+    // nilai yang ditampilkan/dikirim turun 1%-2% lalu naik lagi.
+    if (beratTotalGram < beratTampilanTertinggi && (beratTampilanTertinggi - beratTotalGram) < 15.0) {
+      beratTotalGram = beratTampilanTertinggi;
+    } else {
+      beratTampilanTertinggi = beratTotalGram;
+    }
   } else {
     beratTotalGram = beratUkur;
+    beratTampilanTertinggi = beratTotalGram;
   }
 
   nilaiMentah = rawBaru;
