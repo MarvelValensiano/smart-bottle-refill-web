@@ -91,12 +91,28 @@
     </section>
 
     <section class="panel refill-panel">
-        <div class="panel-header"><div><div class="eyebrow">AUTOMATIC REFILL</div><h2>Proses Pengisian</h2></div><span class="status-chip {{ $activeRefill ? 'chip-blue' : 'chip-gray' }}" id="refillState"><i></i>{{ $activeRefill ? strtoupper($activeRefill->status) : 'IDLE' }}</span></div>
+        <div class="panel-header"><div><div class="eyebrow">AUTOMATIC REFILL</div><h2>Proses Pengisian</h2></div><span class="status-chip {{ $activeRefill ? ($activeRefill->status === 'cancelled' ? 'chip-red' : 'chip-blue') : 'chip-gray' }}" id="refillState"><i></i>{{ $activeRefill ? strtoupper($activeRefill->status) : 'IDLE' }}</span></div>
         <div class="refill-illustration"><div class="bottle-visual"><div class="bottle-cap"></div><div class="bottle-neck"></div><div class="bottle-body"><div class="bottle-water" id="bottleWater" style="height:{{ max(0,min(100,(float)($percent ?? 0))) }}%"></div><span>H₂O</span></div></div><div class="refill-wave wave-one"></div><div class="refill-wave wave-two"></div></div>
         <div class="progress-head"><span>PROGRES MENUJU TARGET</span><b id="progressPercent">{{ $progress !== null ? number_format($progress, 0).'%' : '—' }}</b></div>
         <div class="progress-track"><div class="progress-fill" id="progressFill" style="width:{{ $progress ?? 0 }}%"></div></div>
         <div class="progress-foot"><span>Persediaan saat ini</span><b id="progressCurrent">{{ $percent !== null ? number_format($percent,0).'%' : '—' }}</b><span>Target berhenti</span><b id="progressTarget">{{ $activeRefill?->target_percent ? number_format($activeRefill->target_percent,0).'%' : ($device?->setting?->stop_percent ? number_format($device->setting->stop_percent,0).'%' : '—') }}</b></div>
-        <div class="safe-note"><span>✦</span><p><b>Kontrol otomatis aktif</b><br>Keputusan pompa dan pengamanan refill dijalankan oleh middleware/backend IoT.</p></div>
+        
+        <!-- TOMBOL STOP REFILL (KENDALI DARURAT PELATIH / OPERATOR) -->
+        <div style="margin-top:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#fef2f2;border:1px solid #fee2e2;padding:10px 14px;border-radius:8px;">
+            <div style="font-size:12px;color:#991b1b;line-height:1.3;">
+                <b>Kontrol Pelatih / Operator:</b><br>
+                <span style="color:#b91c1c;font-size:11px;">Hentikan pengisian seketika jika diperlukan.</span>
+            </div>
+            <form action="{{ route('device.force-stop') }}" method="POST" id="formStopRefill" style="margin:0;">
+                @csrf
+                <input type="hidden" name="rack" value="rack01">
+                <button type="submit" id="btnStopRefill" class="btn-primary" style="background:#dc2626;border-color:#b91c1c;color:#fff;padding:8px 16px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;border-radius:6px;cursor:pointer;transition:all .2s;" {{ ($activeRefill && in_array($activeRefill->status, ['filling', 'paused', 'pending'])) || ($latest?->pump_on) ? '' : 'disabled' }}>
+                    <span>⏹</span> Stop Refill
+                </button>
+            </form>
+        </div>
+
+        <div class="safe-note" style="margin-top:12px;"><span>✦</span><p><b>Kontrol otomatis aktif</b><br>Keputusan pompa dan pengamanan refill dijalankan oleh middleware/backend IoT.</p></div>
     </section>
 </div>
 

@@ -90,8 +90,20 @@
                 const state = document.getElementById('refillState');
                 if (state) {
                     const active = ['pending', 'filling', 'paused'].includes(d.refill_status);
-                    state.className = 'status-chip ' + (active ? 'chip-blue' : 'chip-gray');
-                    state.innerHTML = '<i></i>' + (active ? String(d.refill_status).toUpperCase() : 'IDLE');
+                    const isCancelled = d.refill_status === 'cancelled';
+                    state.className = 'status-chip ' + (active ? 'chip-blue' : (isCancelled ? 'chip-red' : 'chip-gray'));
+                    state.innerHTML = '<i></i>' + (active || isCancelled ? String(d.refill_status).toUpperCase() : 'IDLE');
+                }
+
+                // Update Tombol Stop Refill
+                const btnStop = document.getElementById('btnStopRefill');
+                if (btnStop) {
+                    const canStop = ['pending', 'filling', 'paused'].includes(d.refill_status) || !!d.pump_on;
+                    btnStop.disabled = !canStop;
+                    if (!canStop && btnStop.dataset.stopping === 'true') {
+                        btnStop.dataset.stopping = 'false';
+                        btnStop.innerHTML = '<span>⏹</span> Stop Refill';
+                    }
                 }
 
                 const progress = (d.progress === null || d.progress === undefined) ? null : Math.max(0, Math.min(100, Number(d.progress)));
@@ -179,6 +191,44 @@
                 }
             }
         };
+
+        // Event listener AJAX untuk form stop refill
+        const formStop = document.getElementById('formStopRefill');
+        if (formStop) {
+            formStop.addEventListener('submit', async function (e) {
+                e.preventDefault();
+                const btn = document.getElementById('btnStopRefill');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.dataset.stopping = 'true';
+                    btn.innerHTML = '<span>⏳</span> Menghentikan...';
+                }
+
+                try {
+                    const formData = new FormData(formStop);
+                    const res = await fetch(formStop.action, {
+                        method: 'POST',
+                        body: formData,
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }
+                    });
+                    if (res.ok) {
+                        const state = document.getElementById('refillState');
+                        if (state) {
+                            state.className = 'status-chip chip-red';
+                            state.innerHTML = '<i></i>CANCELLED';
+                        }
+                        setText('waterStatus', 'DIBATALKAN');
+                        setText('pumpStatus', 'OFF');
+                        await refresh();
+                    }
+                } catch (err) {
+                    console.error('Gagal mengirim stop command:', err);
+                }
+            });
+        }
 
         refresh();
         window.setInterval(refresh, pollInterval);

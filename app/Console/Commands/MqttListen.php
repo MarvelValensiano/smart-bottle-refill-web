@@ -250,6 +250,23 @@ class MqttListen extends Command
 
             $isWaterEmptyAlert = ($activeRefill && $activeRefill->status === 'paused' && $activeRefill->finish_reason === 'SUMBER_AIR_KOSONG');
 
+            // Cek apakah ada pembatalan manual oleh pelatih/operator
+            $lastCancelledRefill = \App\Models\Refill::where('device_id', $record->device_id)
+                ->where('status', 'cancelled')
+                ->where('finish_reason', 'MANUAL_STOP')
+                ->latest('id')
+                ->first();
+            $isCancelledLocked = false;
+            if ($lastCancelledRefill && $record->bottle_present) {
+                $liftedAfterCancel = \App\Models\Telemetry::where('device_id', $record->device_id)
+                    ->where('id', '>', $lastCancelledRefill->updated_at ? \App\Models\Telemetry::where('device_id', $record->device_id)->where('created_at', '<=', $lastCancelledRefill->updated_at)->max('id') ?? 0 : 0)
+                    ->where('bottle_present', false)
+                    ->exists();
+                if (!$liftedAfterCancel) {
+                    $isCancelledLocked = true;
+                }
+            }
+
             // Ambil ambang batas pengisian penuh yang dipilih user di dashboard
             $setting = \App\Models\DeviceSetting::where('device_id', $record->device_id)->first();
             $stopPercent = (float) ($setting?->stop_percent ?? 80.0);
@@ -259,6 +276,8 @@ class MqttListen extends Command
                 $statusText = 'SUMBER KOSONG';
             } elseif ($activeRefill) {
                 $statusText = $activeRefill->status === 'paused' ? 'REFILL DIJEDA' : 'MENGISI';
+            } elseif ($isCancelledLocked) {
+                $statusText = 'DIBATALKAN';
             } elseif (!$record->bottle_present) {
                 $statusText = 'TANPA BOTOL';
             } elseif ($record->water_percent !== null && $record->water_percent <= 30.0) {

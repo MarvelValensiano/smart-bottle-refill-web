@@ -176,8 +176,8 @@ class RefillControlService
                 }
 
                 // Kasus A3b: Dijeda karena botol diangkat lalu diletakkan kembali
-                // Beri jeda sebentar agar pembacaan timbangan stabil sebelum menyalakan pompa lagi
-                if (!$this->isBottlePlacementStable($device, $telemetry, $setting)) {
+                // Cepat lanjutkan pengisian (cukup butuh minimal 2 sampel stabil ~1 detik)
+                if (!$this->isBottlePlacementStable($device, $telemetry, $setting, 1000)) {
                     return $commandsToSend;
                 }
 
@@ -289,6 +289,28 @@ class RefillControlService
         $startPercent = (float) ($setting->start_percent ?? 30.0);
         $stopPercent = (float) ($setting->stop_percent ?? 80.0);
 
+        // Penguncian Pembatalan Manual:
+        // Jika siklus refill terakhir dibatalkan secara manual (MANUAL_STOP) oleh operator,
+        // jangan mulai refill otomatis baru sampai botol diangkat dari tatakan terlebih dahulu!
+        $lastCancelledRefill = Refill::where('device_id', $device->id)
+            ->where('status', 'cancelled')
+            ->where('finish_reason', 'MANUAL_STOP')
+            ->latest('id')
+            ->first();
+
+        if ($lastCancelledRefill && $bottlePresent) {
+            // Periksa apakah botol pernah diangkat setelah pembatalan tersebut
+            $liftedAfterCancel = Telemetry::where('device_id', $device->id)
+                ->where('id', '>', $lastCancelledRefill->updated_at ? Telemetry::where('device_id', $device->id)->where('created_at', '<=', $lastCancelledRefill->updated_at)->max('id') ?? 0 : 0)
+                ->where('bottle_present', false)
+                ->exists();
+
+            if (!$liftedAfterCancel) {
+                // Botol masih botol yang sama dan belum diangkat sejak di-stop pelatih/operator
+                return $commandsToSend;
+            }
+        }
+
         if (
             $bottlePresent &&
             $telemetry->sensor_ready &&
@@ -389,6 +411,26 @@ class RefillControlService
                 'badge' => 'REFILL DIJEDA',
                 'description' => 'Pengisian dijeda sementara karena botol diangkat. Letakkan botol kembali untuk melanjutkan pengisian.',
             ];
+        }
+
+        $lastCancelled = Refill::where('device_id', $device->id)
+            ->where('status', 'cancelled')
+            ->where('finish_reason', 'MANUAL_STOP')
+            ->latest('id')
+            ->first();
+        if ($lastCancelled && !$isBottleRemoved) {
+            $liftedSince = Telemetry::where('device_id', $device->id)
+                ->where('id', '>', $lastCancelled->updated_at ? Telemetry::where('device_id', $device->id)->where('created_at', '<=', $lastCancelled->updated_at)->max('id') ?? 0 : 0)
+                ->where('bottle_present', false)
+                ->exists();
+            if (!$liftedSince) {
+                return [
+                    'status' => 'DIBATALKAN',
+                    'color' => 'rose',
+                    'badge' => 'DIBATALKAN',
+                    'description' => 'Pengisian dihentikan oleh pelatih/operator. Angkat botol untuk mereset sistem.',
+                ];
+            }
         }
 
         if ($isBottleRemoved) {
@@ -516,9 +558,9 @@ class RefillControlService
      * Pastikan botol berada di tatakan dan pembacaan timbangan sudah tenang
      * selama minimal durasi jeda stabilisasi (default 2000 ms) sebelum pompa aktif.
      */
-    private function isBottlePlacementStable(Device $device, Telemetry $current, $setting): bool
+    private function isBottlePlacementStable(Device $device, Telemetry $current, $setting, ?int $customDurationMs = null): bool
     {
-        $durationMs = (int) ($setting->stable_duration_ms ?? 2000);
+        $durationMs = $customDurationMs ?? (int) ($setting->stable_duration_ms ?? 2000);
         if ($durationMs <= 0) {
             $durationMs = 2000;
         }
@@ -529,8 +571,8 @@ class RefillControlService
         }
 
         // Interval pengiriman telemetry ESP32 adalah ~500ms
-        // Minimal butuh 4 sampel data stabil (sekitar 2 detik)
-        $samplesNeeded = max(3, (int) ceil($durationMs / 500.0));
+        // Jika customDurationMs misal 1000ms, butuh 2 sampel stabil
+        $samplesNeeded = max(2, (int) ceil($durationMs / 500.0));
 
         $recent = Telemetry::where('device_id', $device->id)
             ->where('id', '<=', $current->id)

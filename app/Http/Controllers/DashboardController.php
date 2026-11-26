@@ -315,13 +315,14 @@ class DashboardController extends Controller
         return back()->with('success', "Spesifikasi botol berhasil disesuaikan: Kosong {$request->input('empty_weight_g')} g, Kapasitas {$request->input('water_capacity_g')} mL.");
     }
 
-    public function forceStopPump(Request $request): RedirectResponse
+    public function forceStopPump(Request $request): JsonResponse|RedirectResponse
     {
         $rackCode = $request->input('rack', self::RACK);
         $device = Device::where('code', $rackCode)->firstOrFail();
 
         $activeRefill = Refill::where('device_id', $device->id)
-            ->whereIn('status', ['filling', 'paused'])
+            ->whereIn('status', ['filling', 'paused', 'pending'])
+            ->latest('id')
             ->first();
 
         if ($activeRefill) {
@@ -329,6 +330,16 @@ class DashboardController extends Controller
                 'status' => 'cancelled',
                 'finish_reason' => 'MANUAL_STOP',
                 'finished_at' => now(),
+            ]);
+
+            DeviceEvent::create([
+                'event_id' => (string) Str::uuid(),
+                'device_id' => $device->id,
+                'refill_id' => $activeRefill->id,
+                'type' => 'refill_cancelled',
+                'severity' => 'warning',
+                'message' => 'Pengisian air dihentikan paksa secara manual oleh pelatih/operator melalui web dashboard.',
+                'occurred_at' => now(),
             ]);
         }
 
@@ -339,13 +350,20 @@ class DashboardController extends Controller
             'target_boot_id' => (string) Str::uuid(),
             'command_sequence' => $seq + 1,
             'type' => 'set_pump',
-            'payload' => ['pump' => false],
+            'payload' => ['pump' => false, 'reason' => 'cancelled'],
             'status' => 'pending',
             'lease_ms' => 0,
             'expires_at' => now()->addSeconds(30),
         ]);
 
-        return back()->with('success', "Perintah stop pompa berhasil dikirim.");
+        if ($request->wantsJson() || $request->ajax()) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Perintah stop refill berhasil dikirim. Pompa dimatikan seketika.',
+            ]);
+        }
+
+        return back()->with('success', "Perintah stop refill berhasil dikirim. Pengisian dibatalkan.");
     }
 
     public function testPump(Request $request): RedirectResponse
@@ -465,6 +483,24 @@ class DashboardController extends Controller
                 $waterStatus = 'REFILL DIJEDA';
             } else {
                 $waterStatus = 'SEDANG REFILL';
+            }
+        } else {
+            // Cek jika baru saja dibatalkan manual dan botol belum diangkat
+            $lastCancelledRefill = $device ? Refill::where('device_id', $device->id)
+                ->where('status', 'cancelled')
+                ->where('finish_reason', 'MANUAL_STOP')
+                ->latest('id')
+                ->first() : null;
+
+            if ($lastCancelledRefill && $latest && $latest->bottle_present) {
+                $liftedAfterCancel = Telemetry::where('device_id', $device->id)
+                    ->where('id', '>', $lastCancelledRefill->updated_at ? Telemetry::where('device_id', $device->id)->where('created_at', '<=', $lastCancelledRefill->updated_at)->max('id') ?? 0 : 0)
+                    ->where('bottle_present', false)
+                    ->exists();
+
+                if (!$liftedAfterCancel) {
+                    $waterStatus = 'DIBATALKAN';
+                }
             }
         }
 

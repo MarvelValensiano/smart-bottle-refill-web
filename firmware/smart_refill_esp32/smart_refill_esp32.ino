@@ -252,6 +252,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         pesanStatus = "Pengisian Sukses";
         baruSelesaiRefill = true;
         bunyikanBuzzer(2500, 300);
+      } else if (pesan.indexOf("\"reason\":\"cancelled\"") >= 0 || pesan.indexOf("\"reason\": \"cancelled\"") >= 0) {
+        pesanStatus = "DIBATALKAN";
+        baruSelesaiRefill = false;
+        bunyikanBuzzer(1500, 500);
       } else if (pesan.indexOf("\"reason\":\"water_empty\"") >= 0 || pesan.indexOf("\"reason\": \"water_empty\"") >= 0) {
         pesanStatus = "SUMBER KOSONG";
         baruSelesaiRefill = false;
@@ -366,30 +370,36 @@ void bacaTimbangan() {
     return; // Abaikan sampel rusak akibat noise kelistrikan
   }
 
-  // 2. Proteksi Lonjakan Mendadak saat Pompa Aktif (Getaran motor / percikan air)
+  // Hitung berat mentah dari sampel ADC terbaru
   float beratUkur = (float)(rawBaru - titikNolTare) / faktorKalibrasi;
   if (fabs(beratUkur) < 2.0) beratUkur = 0.0;
 
-  if (pompaAktif && pernahBacaSensor) {
-    // Jika ada lompatan drastis > 40 gram dalam 1 putaran loop saat pompa aktif
-    if (fabs(beratUkur - beratTotalGram) > 40.0) {
-      delayMicroseconds(50);
-      if (timbangan.is_ready()) {
-        long rawKonfirmasi = timbangan.read();
-        float beratKonfirmasi = (float)(rawKonfirmasi - titikNolTare) / faktorKalibrasi;
-        if (fabs(beratKonfirmasi - beratTotalGram) > 40.0) {
-          // Benar-benar ada perubahan fisik nyata (misal botol diangkat/ditaruh)
-          rawBaru = rawKonfirmasi;
-          beratUkur = beratKonfirmasi;
-        } else {
-          // Nilai rawBaru sebelumnya terbukti hanya glitch sesaat, abaikan
-          return;
-        }
-      } else {
-        return;
+  // 2. DETEKSI BOTOL DIANGKAT (INSTANT HARDWARE CUTOFF):
+  // Jika beban di bawah batas lepas, segera tangani tanpa smoothing/delay!
+  if (beratUkur <= BATAS_BOTOL_LEPAS) {
+    beratTotalGram = beratUkur;
+    nilaiMentah = rawBaru;
+    terakhirBacaSensor = millis();
+    pernahBacaSensor = true;
+
+    if (botolAda) {
+      botolAda = false;
+      baruSelesaiRefill = false;
+      persenAir = 0.0;
+
+      // INSTANT CUTOFF: Matikan pompa seketika tanpa menunggu siklus loop berikutnya!
+      if (pompaAktif) {
+        pompaOff();
+        pesanStatus = "BOTOL DIANGKAT";
+        Serial.println(">> [INSTANT CUTOFF] Botol diangkat! Pompa dimatikan seketika!");
       }
     }
-    // Filter perataan ringan saat pompa menyala agar riak air tidak mengacaukan bacaan
+    return;
+  }
+
+  // 3. JIKA BOTOL ADA / DI ATAS TATAKAN:
+  if (pompaAktif && pernahBacaSensor) {
+    // Filter perataan ringan saat pompa menyala agar riak/getaran air stabil
     beratTotalGram = (0.75f * beratUkur) + (0.25f * beratTotalGram);
   } else {
     beratTotalGram = beratUkur;
@@ -399,12 +409,10 @@ void bacaTimbangan() {
   terakhirBacaSensor = millis();
   pernahBacaSensor = true;
 
-  // Deteksi Botol Berdasarkan Berat (Histeresis 14g / 9g)
+  // Deteksi Botol Diletakkan (Histeresis BATAS_BOTOL_ADA 14g)
   if (!botolAda && beratTotalGram >= BATAS_BOTOL_ADA) {
     botolAda = true;
-  } else if (botolAda && beratTotalGram <= BATAS_BOTOL_LEPAS) {
-    botolAda = false;
-    baruSelesaiRefill = false; // Reset tanda selesai refill begitu botol diangkat dari tatakan
+    Serial.println(">> [SENSOR] Botol terdeteksi ditaruh di tatakan.");
   }
 
   // Kalkulasi Persentase Sisa Air (Hanya dihitung lokal jika server listener offline / belum terhubung)
@@ -554,15 +562,19 @@ void perbaruiTampilan() {
     if (statusAlarm || pesanStatus.indexOf("KOSONG") >= 0) {
       tulisBarisLCD(1, "SUMBER KOSONG");
     }
-    // 2. Refill Dijeda (botol diangkat saat pengisian lalu ditaruh kembali)
+    // 2. Refill Dibatalkan Operator
+    else if (pesanStatus.indexOf("BATAL") >= 0) {
+      tulisBarisLCD(1, "DIBATALKAN");
+    }
+    // 3. Refill Dijeda (botol diangkat saat pengisian lalu ditaruh kembali)
     else if (pesanStatus.indexOf("DIJEDA") >= 0) {
       tulisBarisLCD(1, "REFILL DIJEDA");
     }
-    // 3. Pompa sedang aktif mengisi air
+    // 4. Pompa sedang aktif mengisi air
     else if (pompaAktif || pesanStatus.indexOf("MENGISI") >= 0) {
       tulisBarisLCD(1, "MENGISI");
     }
-    // 4. Jika baru saja selesai refill (target tercapai) dan botol belum diangkat
+    // 5. Jika baru saja selesai refill (target tercapai) dan botol belum diangkat
     else if (baruSelesaiRefill) {
       tulisBarisLCD(1, "Pengisian Sukses");
     }
